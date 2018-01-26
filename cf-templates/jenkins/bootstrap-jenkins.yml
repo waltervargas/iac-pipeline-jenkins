@@ -1,0 +1,186 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Jenkins Bootstrapping Template
+Metadata:
+  Version: '0.0.1'
+  Stack: 0
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Parameters:
+      - GitUrl
+      - GitBranch
+      - InstanceType
+      - Key
+      - Plugins
+      - BucketName
+      Label:
+        default: Jenkins
+
+Mappings:
+  amis:
+    eu-west-1:
+      "amazon": "ami-7690240f"
+
+Parameters:
+  InstanceType:
+    Description: Instance Type for Jenkins
+    ConstraintDescription: Please provide a valid Amazon EC2 Instance Type
+    Type: String
+    Default: m3.large
+    AllowedValues:
+    - t2.medium
+    - m3.medium
+    - m3.large
+  Key:
+    ConstraintDescription: Please provide a valid Amazon EC2 Key Pair Name
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Amazon EC2 Key Pair Name
+  Plugins:
+    Default: job-dsl git github workflow-aggregator pipeline-stage-view docker-custom-build-environment jenkins-multijob-plugin ansicolor
+    ConstraintDescription: Please provide a list of valid Jenkins plugins names
+    Type: String
+    Description: Jenkins plugins id (space separator).
+  BucketName:
+    Type: String
+    Description: Jenkins Backup and Restore S3 Bucket. 
+  Restore:
+    Default: false
+    Type: String
+    Description: Restore Jenkins from last backup?
+    AllowedValues:
+     - true
+     - false
+  GitUrl:
+    ConstraintDescription: Please provide a git url.
+    Type: String
+    Description: Git Repository for IAC.
+  GitBranch:
+    Default: master
+    ConstraintDescription: Must be a valid git branch
+    Type: String
+    Description: Git Branch
+  AllowFromCIDR:
+    Type: String
+    Description: Allow access from this ip address
+    ConstraintDescription: Please Provides a valid CIDR Block.
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-${AWS::Region}-${BucketName}"
+    
+  JenkinsAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DependsOn: Bucket
+    Properties:
+      Path: !Sub "/${AWS::StackName}/Jenkins/S3AccessPolicy/"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action: 
+              - s3:*
+            Resource:
+              - !Sub "arn:aws:s3:::${AWS::AccountId}-${AWS::Region}-${BucketName}/*"
+          -
+            Effect: Deny
+            Action:
+              - s3:Delete*
+              - s3:*Acl*
+            Resource:
+              - !Sub "arn:aws:s3:::${AWS::AccountId}-${AWS::Region}-${BucketName}"
+          -
+            Effect: Allow
+            Action:
+              - ec2:*
+              - cloudformation:*
+            Resource:
+              - "*"
+
+  JenkinsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: !Sub "/${AWS::StackName}/Jenkins/InstanceRole/"
+      ManagedPolicyArns:
+        - Ref: JenkinsAccessPolicy
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+
+  JenkinsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: !Sub "/${AWS::StackName}/Jenkins/InstanceProfile/"
+      Roles:
+      - Ref: JenkinsInstanceRole
+
+  JenkinsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+      - Value: !Sub ${AWS::StackName}
+        Key: StackName
+      - Value: !Sub ${AWS::StackName}-JenkinsSG
+        Key: Name
+      GroupDescription: Jenkins
+      SecurityGroupIngress:
+      - ToPort: '22'
+        FromPort: '22'
+        IpProtocol: tcp
+        CidrIp: !Sub ${AllowFromCIDR}
+
+      - ToPort: '8080'
+        FromPort: '8080'
+        IpProtocol: tcp
+        CidrIp: !Sub ${AllowFromCIDR}
+
+  JenkinsLC:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [ amis, !Ref "AWS::Region", amazon ]
+      KeyName: !Sub ${Key}
+      SecurityGroups:
+        - Ref: JenkinsSG
+      IamInstanceProfile:
+        Ref: JenkinsInstanceProfile
+      InstanceType:
+        Ref: InstanceType
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Update route53 record
+          localip=$(curl -fs http://169.254.169.254/latest/meta-data/local-ipv4)
+          echo "$localip jenkins" >> /etc/hosts
+          hostname jenkins
+
+          yum install -y aws-cfn-bootstrap jq
+
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource JenkinsSeedLc --configsets jenkins --region ${AWS::Region}
+
+  JenkinsASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 1
+      Tags:
+      - PropagateAtLaunch: true
+        Value: !Sub "${AWS::StackName}"
+        Key: StackName
+      - PropagateAtLaunch: true
+        Value: !Sub "${AWS::StackName}-jenkins"
+        Key: Name
+      MinSize: 1
+      MaxSize: 1
+      LaunchConfigurationName:
+        Ref: JenkinsLC
+      HealthCheckGracePeriod: '600'
+      HealthCheckType: EC2
+      AvailabilityZones:
+        Fn::GetAZs: ""
