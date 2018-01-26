@@ -162,11 +162,12 @@ Resources:
           echo "$localip jenkins" >> /etc/hosts
           hostname jenkins
 
-          yum install -y aws-cfn-bootstrap jq git
+          yum install -y jq git
 
           git clone ${GitUrl}
-
-          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource JenkinsSeedLc --configsets jenkins --region ${AWS::Region}
+          cd iac-pipeline-jenkins
+          chmod +x scripts/bootstrap.sh
+          ./scripts/bootstrap.sh
 
   JenkinsASG:
     Type: AWS::AutoScaling::AutoScalingGroup
