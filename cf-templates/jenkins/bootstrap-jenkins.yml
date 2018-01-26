@@ -54,6 +54,7 @@ Parameters:
     ConstraintDescription: Please provide a git url.
     Type: String
     Description: Git Repository for IAC.
+    Default: https://github.com/waltervargas/iac-pipeline-jenkins.git
   GitBranch:
     Default: master
     ConstraintDescription: Must be a valid git branch
@@ -161,7 +162,9 @@ Resources:
           echo "$localip jenkins" >> /etc/hosts
           hostname jenkins
 
-          yum install -y aws-cfn-bootstrap jq
+          yum install -y aws-cfn-bootstrap jq git
+
+          git clone ${GitUrl}
 
           /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource JenkinsSeedLc --configsets jenkins --region ${AWS::Region}
 
@@ -179,7 +182,7 @@ Resources:
       MinSize: 1
       MaxSize: 1
       LaunchConfigurationName:
-        Ref: JenkinsLC
+        Ref: JenkinLC
       HealthCheckGracePeriod: '600'
       HealthCheckType: EC2
       AvailabilityZones:
